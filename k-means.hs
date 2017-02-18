@@ -1,53 +1,61 @@
+{-# LANGUAGE FlexibleInstances #-}
 module Main (main) where
 
 import System.Environment (getArgs)
-import System.Random (mkStdGen,randomRs)
+import System.Random (mkStdGen, randomRs)
 import System.Clock (TimeSpec, Clock(Realtime), getTime, diffTimeSpec, toNanoSecs) -- requires "clock" package
-import System.IO (readFile,writeFile,hFlush,stdout)
-import Data.List (foldl',minimumBy,nub)
+import System.IO (readFile, writeFile, hFlush, stdout)
+import Data.List (foldl', minimumBy, nub)
 import Data.Ord (comparing)
 
-type Point = (Double,Double)
-dist :: Point -> Point -> Double
-dist (a,b) (c,d) = (a-c)^2 + (b-d)^2
+class Clusterizable a where
+  dist      :: a -> a -> Double
+  mean      :: [a] -> a
+  fromFile  :: String -> a
+  toFile    :: a -> String
 
--- Mean of a list of points
-mean :: [Point] -> Point
-mean pts = (sum xs / len, sum ys / len)
-  where (xs,ys) = unzip pts
-        len = fromIntegral $ length pts
+type Point = (Double,Double)
+instance Clusterizable Point where
+  dist (a,b) (c,d)  = (a-c)^2 + (b-d)^2
+  mean pts          = let (xs,ys,len) = foldl' (\(ax,ay,len) (x,y) -> (ax+x,ay+y,len+1)) (0,0,0) pts in (xs / len, ys / len)
+  fromFile str      = let (x:y:_) = words str in (read x, read y)
+  toFile (x,y)      = show x ++ " " ++ show y
+
+-- Strict and fused map + length (+ reverse)
+mapAndLength :: (a -> b) -> [a] -> ([b],Int)
+mapAndLength f = foldl' (\(result,len) x -> ((f x):result, len+1)) ([],0)
 
 -- Main heavy-lifting function, generating the initial centers and
 -- clusters and passing them to the looping nextIteration function.
 -- Receives the randomly generated indices of the initial cluster centers.
 -- Returns the final clusters as well as the number of iterations needed.
 -- Each point is given an index in the range [1..k], showing to which cluster it belongs.
-clusterize :: Int -> [Int] -> [Point] -> ([[Point]], Int)
+clusterize :: Clusterizable a => Int -> [Int] -> [a] -> ([[a]], Int)
 clusterize k centerIdxs points = nextIteration k initialCenters initialClusters 1
   where initialCenters = zip (map (points!!) centerIdxs) [1..]
         initialClusters = fst $ reClusterize initialCenters [(p,-1) | p<-points]
 
 -- At every step this function calculates the new cluster centers,
 -- reclusterizes the points and breaks when no point has changed its cluster.
-nextIteration :: Int -> [(Point,Int)] -> [(Point,Int)] -> Int -> ([[Point]], Int)
+nextIteration :: Clusterizable a => Int -> [(a,Int)] -> [(a,Int)] -> Int -> ([[a]], Int)
 nextIteration k centers points iter
   | isStable  = (groupToClusters k newpoints, iter)
   | otherwise = nextIteration k newcenters newpoints (iter+1)
-  where newcenters = calculateMeans k points
+  where newcenters = calculatemeans k points
         (newpoints,isStable) = reClusterize newcenters points
 
 -- Groups the indexed points in simple lists by their cluster index.
-groupToClusters :: Int -> [(Point,Int)] -> [[Point]]
+groupToClusters :: Int -> [(a,Int)] -> [[a]]
 groupToClusters k points = [ [ p | (p,j)<-points, i==j ] | i<-[1..k]]
 
 -- Calculates all clusters' means by firstly grouping the indexed points by clusters.
-calculateMeans :: Int -> [(Point,Int)] -> [(Point,Int)]
-calculateMeans k points = zip (map mean $ groupToClusters k points) [1..]
+calculatemeans :: Clusterizable a => Int -> [(a,Int)] -> [(a,Int)]
+calculatemeans k points = zip (map mean $ groupToClusters k points) [1..]
 
 -- Recalculates the nearest center for every point, while keeping
 -- check whether a single point has changed its cluster. Done with
 -- a simple strict fold of the indexed point list.
-reClusterize :: [(Point,Int)] -> [(Point,Int)] -> ([(Point,Int)], Bool)
+reClusterize :: Clusterizable a => [(a,Int)] -> [(a,Int)] -> ([(a,Int)], Bool)
 reClusterize centers = foldl' (\(result,flag) (p,i) -> let newI = snd $ minimumBy (comparing (dist p . fst)) centers
                                                        in ((p,newI):result, flag && newI == i)) ([],True)
 
@@ -55,17 +63,13 @@ reClusterize centers = foldl' (\(result,flag) (p,i) -> let newI = snd $ minimumB
 -- tries to assign each point to a cluster, in a way that minimizes this amount.
 -- It is being printed on the standard output in order for the user to judge whether
 -- a local or a global minimum has been reached. WCSS stands for within-cluster sum of squares.
-wcss :: [[Point]] -> Double
+wcss :: Clusterizable a => [[a]] -> Double
 wcss clusters = sum [ sum [ dist center p | let center = mean cl, p<-cl ] | cl<-clusters]
 
--- Small, useful IO-related functions
-readPoint :: String -> Point
-readPoint str = (read x, read y)
-  where (x:y:_) = words str
-
-printClusters :: [[Point]] -> String
+-- Small, useful IO-related function
+printClusters :: Clusterizable a => [[a]] -> String
 printClusters clusters = concat $ zipWith (\ cl idx  -> "Cluster " ++ show idx ++ ":\n" ++ (printCl cl) ++ "\n") clusters [1..]
-  where printCl = unlines . map (\(x,y) -> show x ++ " " ++ show y)
+  where printCl = unlines . map toFile
 
 -- impure Haskell = ugly Haskell
 -- ugly Haskell > ugly C++
@@ -80,16 +84,18 @@ main = do
         hFlush stdout
         start <- getTime Realtime
         contents <- readFile inFilename
-        let points = map readPoint $ lines contents
-            n = length points
-            centerIdxs = take k . nub . randomRs (0,(max k n)-1) . mkStdGen . fromIntegral . toNanoSecs $ start
-            (clusters, iterations) = clusterize k centerIdxs points
-            minReached = wcss clusters
-        writeFile outFilename $ printClusters clusters
-        end <- getTime Realtime
-        putStrLn $ "done. (" ++ show iterations ++ " iterations, "
-                             ++ show (milliseconds start end) ++ "msec, wcss="
-                             ++ show minReached ++ ")"
+        let (points, n) = mapAndLength fromFile $ lines contents :: ([Point],Int)
+        if n < k then
+            putStrLn "error: #clusters should be < #datapoints!"
+        else do
+          let centerIdxs = take k . nub . randomRs (0, n-1) . mkStdGen . fromIntegral . toNanoSecs $ start
+              (clusters, iterations) = clusterize k centerIdxs points
+              minReached = wcss clusters
+          writeFile outFilename $ printClusters clusters
+          end <- getTime Realtime
+          putStrLn $ "done. (" ++ show iterations ++ " iterations, "
+                               ++ show (milliseconds start end) ++ "msec, wcss="
+                               ++ show minReached ++ ")"
   where milliseconds start end = fromIntegral (toNanoSecs (diffTimeSpec start end)) / 10^6
 
 -- iei
