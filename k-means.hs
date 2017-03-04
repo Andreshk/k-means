@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 module Main (main) where
 
-import System.Environment (getArgs)
+import System.Environment (getArgs, withArgs)
 import System.Random (mkStdGen, randomRs)
 import System.Clock (TimeSpec, Clock(Realtime), getTime, diffTimeSpec, toNanoSecs) -- requires "clock" package
 import System.IO (readFile, writeFile, hFlush, stdout)
@@ -53,7 +53,7 @@ calculatemeans :: Clusterizable a => Int -> [(a,Int)] -> [(a,Int)]
 calculatemeans k points = zip (map mean $ groupToClusters k points) [1..]
 
 -- Recalculates the nearest center for every point, while keeping
--- check whether a single point has changed its cluster. Done with
+-- check whether any single point has changed its cluster. Done with
 -- a simple strict fold of the indexed point list.
 reClusterize :: Clusterizable a => [(a,Int)] -> [(a,Int)] -> ([(a,Int)], Bool)
 reClusterize centers = foldl' (\(result,flag) (p,i) -> let newI = snd $ minimumBy (comparing (dist p . fst)) centers
@@ -97,5 +97,9 @@ main = do
                                ++ show (milliseconds start end) ++ "msec, wcss="
                                ++ show minReached ++ ")"
   where milliseconds start end = fromIntegral (toNanoSecs (diffTimeSpec start end)) / 10^6
+
+-- User-friendly version - to be called from GHCI or WinGHCI
+kmeans :: String -> Int -> String -> IO ()
+kmeans inFilename k outFilename = withArgs [inFilename, (show k), outFilename] main
 
 -- iei
