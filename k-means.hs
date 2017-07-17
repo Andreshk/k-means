@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
-module Main (main) where
+module Main (main, kmeans) where
 
 import System.Environment (getArgs, withArgs)
 import System.Random (mkStdGen, randomRs)
@@ -74,29 +74,31 @@ printClusters clusters = concat $ zipWith (\ cl idx  -> "Cluster " ++ show idx +
 -- impure Haskell = ugly Haskell
 -- ugly Haskell > ugly C++
 main = do
-    args <- getArgs
-    if length args < 3 then
-        putStrLn "Inappropriate number of arguments!"
+    (inFilename, k, outFilename) <- parseArgs
+    putStr $ "Clustering into " ++ (show k) ++ " clusters... "
+    hFlush stdout
+    start <- getTime Realtime
+    contents <- readFile inFilename
+    let (points, n) = mapAndLength fromFile $ lines contents :: ([Point],Int)
+    if n < k then
+        putStrLn "error: #clusters should be < #datapoints!"
     else do
-        let (inFilename:k':outFilename:_) = args
-            k = read k'
-        putStr $ "Clustering into " ++ k' ++ " clusters... "
-        hFlush stdout
-        start <- getTime Realtime
-        contents <- readFile inFilename
-        let (points, n) = mapAndLength fromFile $ lines contents :: ([Point],Int)
-        if n < k then
-            putStrLn "error: #clusters should be < #datapoints!"
-        else do
-          let centerIdxs = take k . nub . randomRs (0, n-1) . mkStdGen . fromIntegral . toNanoSecs $ start
-              (clusters, iterations) = clusterize k centerIdxs points
-              minReached = wcss clusters
-          writeFile outFilename $ printClusters clusters
-          end <- getTime Realtime
-          putStrLn $ "done. (" ++ show iterations ++ " iterations, "
-                               ++ show (milliseconds start end) ++ "msec, wcss="
-                               ++ show minReached ++ ")"
+        let centerIdxs = take k . nub . randomRs (0, n-1) . mkStdGen . fromIntegral . toNanoSecs $ start
+            (clusters, iterations) = clusterize k centerIdxs points
+            minReached = wcss clusters
+        writeFile outFilename $ printClusters clusters
+        end <- getTime Realtime
+        putStrLn $ "done. (" ++ show iterations ++ " iterations, "
+                             ++ show (milliseconds start end) ++ "msec, wcss="
+                             ++ show minReached ++ ")"
   where milliseconds start end = fromIntegral (toNanoSecs (diffTimeSpec start end)) / 10^6
+
+-- Improves 'main' readability
+parseArgs :: IO (String, Int, String)
+parseArgs = do
+    args <- getArgs
+    if length args < 3 then error "Inappropriate number of arguments!"
+    else let (a:b:c:_) = args in return (a, read b, c)
 
 -- User-friendly version - to be called from GHCI or WinGHCI
 kmeans :: String -> Int -> String -> IO ()
